@@ -18,7 +18,7 @@
 # =================================
 sh eval.sh \
     configs/vitb_384_DLRSD.yaml \
-    4 \
+    2 \
     output_vitb_384_DLRSD/eval \
     MODEL.WEIGHTS fx_download/0SAVEoutput_vitb_384_DLRSD_rotate_dino_remoteclip_3W_layer5/model_final.pth \
     MODEL.SEM_SEG_HEAD.USE_ROTATE True \
@@ -31,7 +31,7 @@ sh eval.sh \
 # =================================
 sh eval.sh \
     configs/vitb_384_iSAID.yaml \
-    4 \
+    2 \
     output_vitb_384_iSAID/eval \
     MODEL.WEIGHTS fx_download/0SAVEoutput_vitb_384_iSAID_rotate_dino_remoteclip_3W_layer3/model_final.pth \
     MODEL.SEM_SEG_HEAD.USE_ROTATE True \
@@ -45,7 +45,7 @@ sh eval.sh \
 # =================================
 sh eval.sh \
     configs/vitl_336_DLRSD.yaml \
-    4 \
+    2 \
     output_vitl_336_DLRSD/eval \
     MODEL.WEIGHTS fx_download/0SAVEoutput_vitl_336_DLRSD_rotate_dino_remoteclip_3W_layer5/model_final.pth \
     MODEL.SEM_SEG_HEAD.USE_ROTATE True \
@@ -59,7 +59,7 @@ sh eval.sh \
 # =================================
 sh eval.sh \
     configs/vitl_336_iSAID.yaml \
-    4 \
+    2 \
     output_vitl_336_iSAID/eval \
     MODEL.WEIGHTS fx_download/0SAVEoutput_vitl_336_iSAID_rotate_dino_remoteclip_3W_layer2/model_final.pth \
     MODEL.SEM_SEG_HEAD.USE_ROTATE True \

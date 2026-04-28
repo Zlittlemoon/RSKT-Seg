@@ -11,6 +11,17 @@ datasets/VDD
 pretrained/RSKT-Seg-ckpt/
 output/
 detectron2/
+fx_download/
+output_vitb_384_DLRSD/
+output_vitb_384_iSAID/
+output_vitl_336_DLRSD/
+output_vitl_336_iSAID/
+vis_output_DLRSD/
+vis_output_iSAID/
+gt_output_DLRSD/
+gt_output_iSAID/
+train_outputs/
+*.pyc
 *.pth
 *.log
 *.pt

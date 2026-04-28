@@ -36,7 +36,7 @@ class VisualizationDemo(object):
         else:
             self.predictor = DefaultPredictor(cfg)
 
-    def run_on_image(self, image):
+    def run_on_image(self, image, file_name=None):
         """
         Args:
             image (np.ndarray): an image of shape (H, W, C) (in BGR order).
@@ -46,7 +46,14 @@ class VisualizationDemo(object):
             vis_output (VisImage): the visualized image output.
         """
         vis_output = None
-        predictions = self.predictor(image)
+        height, width = image.shape[:2]
+        inputs = {
+            "image": torch.as_tensor(image.astype("float32").transpose(2, 0, 1)),
+            "height": height,
+            "width": width,
+            "file_name": file_name,
+        }
+        predictions = self.predictor.model([inputs])[0]
         # Convert image from OpenCV BGR format to Matplotlib RGB format.
         image = image[:, :, ::-1]
         visualizer = Visualizer(image, self.metadata, instance_mode=self.instance_mode)

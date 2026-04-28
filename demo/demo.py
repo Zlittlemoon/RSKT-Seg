@@ -23,7 +23,7 @@ from detectron2.data.detection_utils import read_image
 from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.logger import setup_logger
 
-from RSDA_Seg import add_rsda_seg_config
+from RSKT_Seg import add_RSKT_seg_config
 from predictor import VisualizationDemo
 
 
@@ -35,7 +35,7 @@ def setup_cfg(args):
     # load config from file and command-line arguments
     cfg = get_cfg()
     add_deeplab_config(cfg)
-    add_rsda_seg_config(cfg)
+    add_RSKT_seg_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()
@@ -115,7 +115,7 @@ if __name__ == "__main__":
             # use PIL, to be consistent with evaluation
             img = read_image(path, format="BGR")
             start_time = time.time()
-            predictions, visualized_output = demo.run_on_image(img)
+            predictions, visualized_output = demo.run_on_image(img, path)
             logger.info(
                 "{}: {} in {:.2f}s".format(
                     path,
