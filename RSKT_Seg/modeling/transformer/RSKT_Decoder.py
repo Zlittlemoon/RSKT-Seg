@@ -161,9 +161,12 @@ class RSKT_Decoder(nn.Module):
         corr = torch.einsum('bnchw, btpc -> bnpthw', img_feats, text_feats)
         if last_score is not None:
             B, N, _, H, W = img_feats.shape
-            score_maps = []
-            for i in range(N):
-                score_maps.append(last_score[i].view(B, H, W))
+            score_maps = [last_score[i].view(B, H, W) for i in range(N)]
+            # Keep score map orientation consistent with img_feats0/1/2/3 after inverse-rotation.
+            if N >= 4:
+                score_maps[1] = torch.rot90(score_maps[1], k=3, dims=(1, 2))
+                score_maps[2] = torch.rot90(score_maps[2], k=2, dims=(1, 2))
+                score_maps[3] = torch.rot90(score_maps[3], k=1, dims=(1, 2))
             score_maps = torch.stack(score_maps, dim=1)  # [B, N, H, W]
             corr = corr * (1.0 + 0.2 * score_maps.unsqueeze(2).unsqueeze(3))
         corr = rearrange(corr, 'B N P T H W -> B (N P) T H W')
