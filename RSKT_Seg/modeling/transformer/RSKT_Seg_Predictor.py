@@ -112,6 +112,9 @@ class RSKT_Seg_Predictor(nn.Module):
         self.text_features_test = self.class_embeddings(self.test_class_texts, prompt_templates, clip_model).permute(1, 0, 2).float()
         
         self.clip_model = clip_model.float()
+        self.clip_model.visual.use_last_vit = True
+        self.clip_model.visual.last_k = 1
+        self.clip_model.visual.last_sigma = 64.0
         self.clip_preprocess = clip_preprocess
         if use_remote_clip:
             self.clip_model_remote = clip_model_remote.float()
@@ -195,7 +198,7 @@ class RSKT_Seg_Predictor(nn.Module):
 
         return ret
 
-    def forward(self, files_name, x, dino_feat, vis_guidance, vis_guidance_remote, dino_guidance, prompt=None, gt_cls=None):
+    def forward(self, files_name, x, dino_feat, vis_guidance, vis_guidance_remote, dino_guidance, last_score=None, prompt=None, gt_cls=None):
         if vis_guidance is not None:
             vis = [vis_guidance[k] for k in vis_guidance.keys()][::-1]
         else:
@@ -218,7 +221,7 @@ class RSKT_Seg_Predictor(nn.Module):
         else:
             text = text.repeat(dino_feat.shape[0], 1, 1, 1)
         # text: [B,N,1,512]
-        out = self.transformer(files_name, x, dino_feat, text, vis, vis_remote, dino_guidance)
+        out = self.transformer(files_name, x, dino_feat, text, vis, vis_remote, dino_guidance, last_score=last_score)
         return out
 
     @torch.no_grad()

@@ -133,14 +133,21 @@ class RSKT_Decoder(nn.Module):
 
         self.head = nn.Conv2d(decoder_dims[1], 1, kernel_size=3, stride=1, padding=1)
         self.pad_len = pad_len
+        self._debug_last_score_iter = 0
+        self._debug_last_score_warmup = 3
+        self._debug_last_score_every = 500
         
-    def correlation(self, img_feats, text_feats):
+    def correlation(self, img_feats, text_feats, last_score=None):
         img_feats = F.normalize(img_feats, dim=1) # B C H W
         text_feats = F.normalize(text_feats, dim=-1) # B T P C
         corr = torch.einsum('bchw, btpc -> bpthw', img_feats, text_feats)
+        if last_score is not None:
+            B, C, H, W = img_feats.shape
+            score_map = last_score.view(B, 1, H, W)
+            corr = corr * (1.0 + 0.2 * score_map[:, None, None, :, :])
         return corr
 
-    def correlation_rotate(self, img_feats, text_feats):
+    def correlation_rotate(self, img_feats, text_feats, last_score=None):
         img_feats0 = F.normalize(img_feats[0], dim=1) # B C H W
         img_feats1 = F.normalize(img_feats[1], dim=1) # B C H W
         img_feats2 = F.normalize(img_feats[2], dim=1) # B C H W
@@ -152,6 +159,13 @@ class RSKT_Decoder(nn.Module):
 
         text_feats = F.normalize(text_feats, dim=-1) # B T P C
         corr = torch.einsum('bnchw, btpc -> bnpthw', img_feats, text_feats)
+        if last_score is not None:
+            B, N, _, H, W = img_feats.shape
+            score_maps = []
+            for i in range(N):
+                score_maps.append(last_score[i].view(B, H, W))
+            score_maps = torch.stack(score_maps, dim=1)  # [B, N, H, W]
+            corr = corr * (1.0 + 0.2 * score_maps.unsqueeze(2).unsqueeze(3))
         corr = rearrange(corr, 'B N P T H W -> B (N P) T H W')
         return corr
 
@@ -227,7 +241,7 @@ class RSKT_Decoder(nn.Module):
         corr_embed = rearrange(corr_embed, '(B T) () H W -> B T H W', B=B)
         return corr_embed
 
-    def forward(self, files_name, img_feats, dino_feat, text_feats, appearance_guidance, appearance_guidance_remote, dino_guidance):
+    def forward(self, files_name, img_feats, dino_feat, text_feats, appearance_guidance, appearance_guidance_remote, dino_guidance, last_score=None):
         """
         Arguments:
             img_feats: (B, C, H, W)
@@ -235,28 +249,35 @@ class RSKT_Decoder(nn.Module):
             apperance_guidance: tuple of (B, C, H, W)
         """
         classes = None
+        self._debug_last_score_iter += 1
+        should_log_last_score = (
+            self._debug_last_score_iter <= self._debug_last_score_warmup
+            or self._debug_last_score_iter % self._debug_last_score_every == 0
+        )
+        if should_log_last_score:
+            print("decoder last_score:", None if last_score is None else (last_score.shape if not isinstance(last_score, list) else [x.shape for x in last_score]))
 
         if dino_feat is not None and img_feats is not None:
             if self.fusion_type == 'simple_separate':
                 if isinstance(img_feats, list):
-                    corr = self.correlation_rotate(img_feats, text_feats)
+                    corr = self.correlation_rotate(img_feats, text_feats, last_score=last_score)
                 else:
-                    corr = self.correlation(img_feats, text_feats)
+                    corr = self.correlation(img_feats, text_feats, last_score=last_score)
                 dino_corr = self.correlation(dino_feat,text_feats)
                 fused_corr_embed, clip_embed_corr, dino_embed_corr  = self.simple_separate_corr(clip_corr=corr, dino_corr=dino_corr,files_name=files_name)
                 fused_corr_embed = fused_corr_embed + clip_embed_corr
             elif self.fusion_type == 'simple_concatenation':
                 if isinstance(img_feats, list):
-                    corr = self.correlation_rotate(img_feats, text_feats)
+                    corr = self.correlation_rotate(img_feats, text_feats, last_score=last_score)
                 else:
-                    corr = self.correlation(img_feats, text_feats)
+                    corr = self.correlation(img_feats, text_feats, last_score=last_score)
                 dino_corr = self.correlation(dino_feat,text_feats)
                 fused_corr_embed = self.simple_concatenation_corr(corr,dino_corr)
             elif self.fusion_type == 'simple_mean':
                 if isinstance(img_feats, list):
-                    corr = self.correlation_rotate(img_feats, text_feats)
+                    corr = self.correlation_rotate(img_feats, text_feats, last_score=last_score)
                 else:
-                    corr = self.correlation(img_feats, text_feats)
+                    corr = self.correlation(img_feats, text_feats, last_score=last_score)
                 dino_corr = self.correlation(dino_feat,text_feats)
                 fused_corr_embed = self.simple_mean_corr(corr,dino_corr)
                 
@@ -267,9 +288,9 @@ class RSKT_Decoder(nn.Module):
             print(f"2222222222222")
         elif dino_feat is None and img_feats is not None:
             if isinstance(img_feats, list):
-                corr = self.correlation_rotate(img_feats, text_feats)
+                corr = self.correlation_rotate(img_feats, text_feats, last_score=last_score)
             else:
-                corr = self.correlation(img_feats,text_feats)
+                corr = self.correlation(img_feats,text_feats, last_score=last_score)
             embed_corr = self.corr_embed(corr)
             fused_corr_embed = embed_corr
             print(f"3333333333333333")

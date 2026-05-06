@@ -54,7 +54,7 @@ class RSKT_Seg_Head(nn.Module):
             ),
         }
 
-    def forward(self, files_name, features, dino_feat, guidance_features, guidance_features_remote, dino_guidance_feat, prompt=None, gt_cls=None):
+    def forward(self, files_name, features, dino_feat, guidance_features, guidance_features_remote, dino_guidance_feat, last_score=None, prompt=None, gt_cls=None):
         """
         Arguments:
             img_feats: (B, C, HW)
@@ -69,5 +69,5 @@ class RSKT_Seg_Head(nn.Module):
         else:
             img_feat = rearrange(features[:, 1:, :], "b (h w) c->b c h w", h=self.feature_resolution[0], w=self.feature_resolution[1])
 
-        return self.predictor(files_name, img_feat, dino_feat, guidance_features, guidance_features_remote, dino_guidance_feat, prompt, gt_cls)
+        return self.predictor(files_name, img_feat, dino_feat, guidance_features, guidance_features_remote, dino_guidance_feat, last_score, prompt, gt_cls)
     

@@ -137,6 +137,11 @@ class RSKT_Seg(nn.Module):
             self.dino_decod_proj2 = nn.ConvTranspose2d(in_channels= 768, out_channels=128, kernel_size=2, stride=2) if self.dino_model and self.dino_decod_dim[0]!=0 else None
             self.dino_down_sample = nn.Conv2d(in_channels=768, out_channels=text_guidance_dim, kernel_size=2, stride=2, padding=0) if self.dino_model else None
 
+        # debug print control for LAST-ViT shape logs
+        self._debug_shape_iter = 0
+        self._debug_shape_warmup = 3
+        self._debug_shape_every = 500
+
     @classmethod
     def from_config(cls, cfg):
         backbone = None
@@ -326,7 +331,19 @@ class RSKT_Seg(nn.Module):
         else:
             dino_feat_input, dino_feat_guidance = None, None
         
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True)
+        clip_features, clip_last_score = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_resized,
+            dense=True,
+            return_last_score=True,
+        )
+        self._debug_shape_iter += 1
+        should_log_shape = (
+            self._debug_shape_iter <= self._debug_shape_warmup
+            or self._debug_shape_iter % self._debug_shape_every == 0
+        )
+        if should_log_shape:
+            print("clip_features:", clip_features.shape)
+            print("clip_last_score:", None if clip_last_score is None else clip_last_score.shape)
         clip_image_features = clip_features[:, 1:, :]
         res3 = rearrange(clip_image_features, "B (H W) C -> B C H W", H=24)
         res4 = rearrange(self.layers[0][1:, :, :], "(H W) B C -> B C H W", H=24)
@@ -336,12 +353,20 @@ class RSKT_Seg(nn.Module):
         clip_features_guidance = {'res5': res5, 'res4': res4, 'res3': res3,}
 
         if self.use_rotate:
-            clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90, dense=True)
-            clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True)
-            clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True)
+            clip_features1, clip_last_score1 = self.sem_seg_head.predictor.clip_model.encode_image(
+                clip_images_resized_90, dense=True, return_last_score=True
+            )
+            clip_features2, clip_last_score2 = self.sem_seg_head.predictor.clip_model.encode_image(
+                clip_images_resized_180, dense=True, return_last_score=True
+            )
+            clip_features3, clip_last_score3 = self.sem_seg_head.predictor.clip_model.encode_image(
+                clip_images_resized_270, dense=True, return_last_score=True
+            )
             clip_features_input = [clip_features,clip_features1,clip_features2,clip_features3]
+            clip_last_score_input = [clip_last_score, clip_last_score1, clip_last_score2, clip_last_score3]
         else:
             clip_features_input = clip_features
+            clip_last_score_input = clip_last_score
 
         if self.use_remote_clip:
             _ = self.sem_seg_head.predictor.clip_model_remote.encode_image(clip_images_resized_remote, dense=True)
@@ -359,7 +384,8 @@ class RSKT_Seg(nn.Module):
         dino_feat_input, 
         clip_features_guidance, 
         clip_features_guidance_remote,
-        dino_feat_guidance)
+        dino_feat_guidance,
+        clip_last_score_input)
         
         # if you want to visualize the corr map
         # visualize_corr(outputs, files_name[0], save_prefix='./vis_cost_out_DLRSD/')

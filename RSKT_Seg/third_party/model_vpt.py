@@ -4,6 +4,7 @@ from typing import Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
+from .last_vit_utils import last_vit_select
 # from visualizer import get_local
 # get_local.activate()
 
@@ -285,7 +286,7 @@ class VisualTransformer(nn.Module):
         self.patch_size = patch_size
         self.input_resolution = input_resolution
 
-    def forward(self, x: torch.Tensor, dense=False):
+    def forward(self, x: torch.Tensor, dense=False, return_last_score=False):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -302,6 +303,15 @@ class VisualTransformer(nn.Module):
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x, dense)
         x = x.permute(1, 0, 2)  # LND -> NLD
+        last_score = None
+        if getattr(self, "use_last_vit", False):
+            patch_tokens = x[:, 1:, :]
+            cls_token, last_score = last_vit_select(
+                patch_tokens,
+                k=getattr(self, "last_k", 1),
+                sigma=getattr(self, "last_sigma", 64.0),
+            )
+            x = torch.cat([cls_token.unsqueeze(1), patch_tokens], dim=1)
 
         if dense:
             x = self.ln_post(x[:, :, :])
@@ -310,7 +320,10 @@ class VisualTransformer(nn.Module):
 
         if self.proj is not None:
             x = x @ self.proj
-        
+
+        if return_last_score:
+            return x, last_score
+
         return x
 
     def resized_pos_embed(self, in_res, tgt_res, mode="bicubic"):
@@ -410,11 +423,15 @@ class CLIP(nn.Module):
         return self.visual.conv1.weight.dtype
 
 
-    def encode_image(self, image, masks=None, pool_mask=None, dense=False):
+    def encode_image(self, image, masks=None, pool_mask=None, dense=False, return_last_score=False):
         if pool_mask is not None:
             return self.visual(image.type(self.dtype), mask=pool_mask, dense=dense)
-        if masks == None:
-            return self.visual(image.type(self.dtype), dense=dense)
+        if masks is None:
+            return self.visual(
+                image.type(self.dtype),
+                dense=dense,
+                return_last_score=return_last_score,
+            )
         else:
             return self.visual(image.type(self.dtype), masks.type(self.dtype))
 
