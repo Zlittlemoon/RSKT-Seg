@@ -138,13 +138,22 @@ class RSKT_Decoder(nn.Module):
         self._debug_last_score_every = 500
         
     def correlation(self, img_feats, text_feats, last_score=None):
-        img_feats = F.normalize(img_feats, dim=1) # B C H W
-        text_feats = F.normalize(text_feats, dim=-1) # B T P C
+        img_feats = F.normalize(img_feats, dim=1)      # [B, C, H, W]
+        text_feats = F.normalize(text_feats, dim=-1)   # [B, T, P, C]
+
         corr = torch.einsum('bchw, btpc -> bpthw', img_feats, text_feats)
+        # corr: [B, P, T, H, W]
+
         if last_score is not None:
             B, C, H, W = img_feats.shape
             score_map = last_score.view(B, 1, H, W)
-            corr = corr * (1.0 + 0.2 * score_map[:, None, None, :, :])
+
+            score_map = score_map - score_map.mean(dim=(-2, -1), keepdim=True)
+            score_map = score_map / (score_map.std(dim=(-2, -1), keepdim=True) + 1e-6)
+            score_map = torch.tanh(score_map)
+
+            corr = corr * (1.0 + 0.05 * score_map.unsqueeze(2))
+
         return corr
 
     def correlation_rotate(self, img_feats, text_feats, last_score=None):
@@ -162,13 +171,20 @@ class RSKT_Decoder(nn.Module):
         if last_score is not None:
             B, N, _, H, W = img_feats.shape
             score_maps = [last_score[i].view(B, H, W) for i in range(N)]
-            # Keep score map orientation consistent with img_feats0/1/2/3 after inverse-rotation.
+
+            # 和旋转后的 img_feats 对齐
             if N >= 4:
                 score_maps[1] = torch.rot90(score_maps[1], k=3, dims=(1, 2))
                 score_maps[2] = torch.rot90(score_maps[2], k=2, dims=(1, 2))
                 score_maps[3] = torch.rot90(score_maps[3], k=1, dims=(1, 2))
+
             score_maps = torch.stack(score_maps, dim=1)  # [B, N, H, W]
-            corr = corr * (1.0 + 0.2 * score_maps.unsqueeze(2).unsqueeze(3))
+
+            score_maps = score_maps - score_maps.mean(dim=(-2, -1), keepdim=True)
+            score_maps = score_maps / (score_maps.std(dim=(-2, -1), keepdim=True) + 1e-6)
+            score_maps = torch.tanh(score_maps)
+
+            corr = corr * (1.0 + 0.05 * score_maps.unsqueeze(2).unsqueeze(3))
         corr = rearrange(corr, 'B N P T H W -> B (N P) T H W')
         return corr
 
