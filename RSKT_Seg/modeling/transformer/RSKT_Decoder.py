@@ -152,7 +152,7 @@ class RSKT_Decoder(nn.Module):
             score_map = score_map / (score_map.std(dim=(-2, -1), keepdim=True) + 1e-6)
             score_map = torch.tanh(score_map)
 
-            corr = corr * (1.0 + 0.05 * score_map.unsqueeze(2))
+            corr = corr * (1.0 + 0.0 * score_map.unsqueeze(2))
 
         return corr
 
@@ -184,7 +184,7 @@ class RSKT_Decoder(nn.Module):
             score_maps = score_maps / (score_maps.std(dim=(-2, -1), keepdim=True) + 1e-6)
             score_maps = torch.tanh(score_maps)
 
-            corr = corr * (1.0 + 0.05 * score_maps.unsqueeze(2).unsqueeze(3))
+            corr = corr * (1.0 + 0.0 * score_maps.unsqueeze(2).unsqueeze(3))
         corr = rearrange(corr, 'B N P T H W -> B (N P) T H W')
         return corr
 
