@@ -183,15 +183,18 @@ class RSKT_Decoder(nn.Module):
         self.pad_len = pad_len
 
         # ===== LAST-ViT class-wise token branch =====
-        # 先初始化为 0，保证刚开始训练时完全等价于原始 RSKT。
-        # 如果这个分支有用，训练过程中 alpha 会自动学到非零值。
-        self.last_prior_alpha = nn.Parameter(torch.tensor(0.0))
-
-        # softmax 温度。越小越接近 hard top-k，越大越平滑。
-        self.last_token_temperature = 0.07
-
-        # 是否打开 class-wise LAST prior。
+        # 弱 prior 实验：打开 class-wise LAST prior，但只用固定小权重注入。
         self.use_classwise_last_prior = True
+
+        # 固定 alpha，不注册成 nn.Parameter，避免 DDP unused parameter 或 alpha 学得过大。
+        # 之前 alpha 学到 0.05~0.08 后训练明显变差，所以先固定成很小的 0.001。
+        self.last_prior_alpha = 0.001
+
+        # softmax 温度：0.3 比 0.07 更平滑，避免近似 hard top-k。
+        self.last_token_temperature = 0.30
+
+        # LAST score 只作为弱稳定性辅助，不再和 cost map 直接硬乘。
+        self.last_score_weight = 0.10
 
         self._debug_last_score_iter = 0
         self._debug_last_score_warmup = 3
@@ -380,8 +383,9 @@ class RSKT_Decoder(nn.Module):
         corr_for_select = self._normalize_spatial_map(corr_for_select)
 
         # class-wise selection score:
-        # stable patches should also be class-relevant.
-        selection_score = corr_for_select * (0.5 + score_map)
+        # 以类别相关性 corr_for_select 为主，LAST score 只作为弱稳定性辅助。
+        # 不再使用乘法，避免 class-agnostic stability 过强地控制类别选择。
+        selection_score = corr_for_select + self.last_score_weight * score_map
         # [B, T, H, W]
 
         # Soft spatial selection over H*W.
@@ -581,15 +585,23 @@ class RSKT_Decoder(nn.Module):
                 print("decoder last_score:", [None if x is None else x.shape for x in last_score])
             else:
                 print("decoder last_score:", None if last_score is None else last_score.shape)
-            print("last_prior_alpha:", float(self.last_prior_alpha.detach().cpu()))
 
-        # Build class-wise LAST prior before the original fusion path.
-        # This branch only uses CLIP features and LAST spatial_score.
-        class_prior = self.build_last_prior_from_clip(
-            img_feats=img_feats,
-            text_feats=text_feats,
-            last_score=last_score,
-        )
+            if self.last_prior_alpha is None:
+                print("last_prior_alpha: None (class-wise LAST prior disabled)")
+            else:
+                print("last_prior_alpha:", float(self.last_prior_alpha))
+                print("last_token_temperature:", float(self.last_token_temperature))
+                print("last_score_weight:", float(self.last_score_weight))
+
+        # Build class-wise LAST prior only when this branch is enabled.
+        # For prior=0 ablation, do not even build this branch.
+        class_prior = None
+        if self.use_classwise_last_prior:
+            class_prior = self.build_last_prior_from_clip(
+                img_feats=img_feats,
+                text_feats=text_feats,
+                last_score=last_score,
+            )
 
         if dino_feat is not None and img_feats is not None:
             if self.fusion_type == "simple_separate":
@@ -687,9 +699,8 @@ class RSKT_Decoder(nn.Module):
         )
 
         # Apply class-wise LAST prior as class-level calibration.
-        # logit: [B, T, H, W]
-        # class_prior: [B, T]
-        if class_prior is not None:
-            logit = logit + self.last_prior_alpha * class_prior[:, :, None, None]
+        # In prior=0 ablation, class_prior is None and this branch is skipped.
+        if class_prior is not None and self.last_prior_alpha is not None:
+            logit = logit + float(self.last_prior_alpha) * class_prior[:, :, None, None]
 
         return logit
