@@ -190,37 +190,43 @@ class RSKT_Decoder(nn.Module):
         self.pad_len = pad_len
 
         # =========================================================================
-        # LAST-ViT spatial cost-map guidance branch
+        # LAST-ViT class-prior-gated spatial cost-map guidance branch
         # =========================================================================
-        # 这一版不再使用：
-        #   class-wise LAST token -> class_prior -> final logit calibration
+        # 不再使用：
+        #   class_prior -> final logit calibration
         #
-        # 而是使用：
-        #   LAST spatial score + CLIP-text cost map
-        #   -> class-wise spatial selection score
-        #   -> refine CLIP cost map before RS-Fusion
+        # 改为：
+        #   selection_score = norm(corr) + 0.1 * norm(last_score)
+        #   gate = sigmoid(sim(classwise_LAST_token, text_token))
+        #   corr' = corr + 0.02 * detach(gate) * detach(selection_score)
         #
-        # 这样可以保留 [B, T, H, W] 空间信息，避免压缩成 [B, T] 的全局类别 prior。
+        # class_prior 只作为 spatial guidance 的门控，不直接加到最终 logits。
         # =========================================================================
 
-        # 关闭原来的 class-level global prior。
+        # 关闭原来的 class-level final-logit prior。
         self.use_classwise_last_prior = False
         self.last_prior_alpha = None
 
-        # 打开新的 spatial guidance。
+        # 打开 class-prior-gated spatial guidance。
         self.use_last_spatial_guidance = True
+        self.use_class_prior_gate = True
 
         # LAST score 只是弱稳定性辅助。
-        # selection_score = norm(corr) + last_score_weight * norm(last_score)
         self.last_score_weight = 0.10
 
-        # spatial selection score 注入 CLIP cost map 的强度。
-        # 第一版建议 0.05，避免过强影响原 RSKT 主路径。
-        self.last_corr_beta = 0.05
+        # gated spatial selection 注入 CLIP cost map 的强度。
+        # 推荐第一版先用 0.02，比上一版 spatial_corr 的 0.05 更保守。
+        self.last_corr_beta = 0.02
 
-        # 是否 detach selection score。
-        # 第一版建议 True，避免 selection 分支反向扰动 CLIP encoder。
+        # 用 selection_score 聚合 class-wise LAST token 时的 softmax 温度。
+        self.last_token_temperature = 0.30
+
+        # class prior gate 的温度，越小 gate 区分度越强。
+        self.last_gate_temperature = 0.5
+
+        # 第一版全部 detach，避免门控分支反向扰动 CLIP encoder。
         self.detach_last_selection = True
+        self.detach_last_gate = True
 
         self._debug_last_score_iter = 0
         self._debug_last_score_warmup = 3
@@ -446,23 +452,86 @@ class RSKT_Decoder(nn.Module):
 
         return selection_score
 
-    def build_last_selection_score_from_clip(self, img_feats, text_feats, last_score):
+    def build_class_prior_gate(self, img_feats, text_feats, selection_score):
         """
-        First spatial-guidance version:
-            If rotation is used, only use the original 0-degree CLIP branch
-            to build LAST selection score.
+        Build class-wise gate from class-wise LAST token.
 
-        The original RSKT rotation cost map is still kept unchanged.
-        The generated selection_score will be broadcast to all prompt/rotation channels.
+        This gate is NOT added to final logits.
+        It only controls how strongly LAST spatial guidance is injected into corr.
+
+        img_feats:
+            [B, C, H, W] or [B, L, C]
+
+        text_feats:
+            [B, T, P, C]
+
+        selection_score:
+            [B, T, H, W]
+
+        return:
+            class_gate: [B, T]
+        """
+        if not self.use_class_prior_gate:
+            return None
+
+        if img_feats is None or text_feats is None or selection_score is None:
+            return None
+
+        img_map = self._to_feature_map(img_feats)
+        img_map = F.normalize(img_map, dim=1)
+        B, C, H, W = img_map.shape
+
+        if selection_score.shape[-2:] != (H, W):
+            selection_score = F.interpolate(
+                selection_score,
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # 用 spatial selection map 聚合每个类别的 LAST token。
+        weights = F.softmax(
+            selection_score.flatten(2) / self.last_token_temperature,
+            dim=-1,
+        )
+        # [B, T, H*W]
+
+        patch_feat = img_map.flatten(2).transpose(1, 2)
+        # [B, H*W, C]
+
+        class_tokens = torch.einsum("btn,bnc->btc", weights, patch_feat)
+        class_tokens = F.normalize(class_tokens, dim=-1)
+        # [B, T, C]
+
+        text_proto = text_feats.mean(dim=2)
+        text_proto = F.normalize(text_proto, dim=-1)
+        # [B, T, C]
+
+        # cosine similarity -> sigmoid gate
+        class_prior = (class_tokens * text_proto).sum(dim=-1)
+        class_gate = torch.sigmoid(class_prior / self.last_gate_temperature)
+        # [B, T]
+
+        if self.detach_last_gate:
+            class_gate = class_gate.detach()
+
+        return class_gate
+
+    def build_last_guidance_from_clip(self, img_feats, text_feats, last_score):
+        """
+        First class-prior-gated spatial-guidance version:
+            If rotation is used, only use the original 0-degree CLIP branch
+            to build LAST selection score and class gate.
 
         return:
             selection_score: [B, T, H, W] or None
+            class_gate: [B, T] or None
         """
         if not self.use_last_spatial_guidance:
-            return None
+            return None, None
 
         if img_feats is None or last_score is None:
-            return None
+            return None, None
 
         if isinstance(img_feats, list):
             base_img_feats = img_feats[0]
@@ -472,7 +541,7 @@ class RSKT_Decoder(nn.Module):
             base_last_score = last_score
 
         if base_img_feats is None or base_last_score is None:
-            return None
+            return None, None
 
         base_corr = self.correlation(base_img_feats, text_feats)
 
@@ -483,11 +552,17 @@ class RSKT_Decoder(nn.Module):
             last_score=base_last_score,
         )
 
-        return selection_score
+        class_gate = self.build_class_prior_gate(
+            img_feats=base_img_feats,
+            text_feats=text_feats,
+            selection_score=selection_score,
+        )
 
-    def apply_last_spatial_guidance(self, corr, selection_score):
+        return selection_score, class_gate
+
+    def apply_last_spatial_guidance(self, corr, selection_score, class_gate=None):
         """
-        Inject LAST-guided spatial score into CLIP cost map.
+        Inject class-prior-gated LAST spatial score into CLIP cost map.
 
         corr:
             [B, P, T, H, W]
@@ -495,11 +570,25 @@ class RSKT_Decoder(nn.Module):
         selection_score:
             [B, T, H, W]
 
+        class_gate:
+            [B, T]
+
         return:
             refined corr: [B, P, T, H, W]
         """
         if corr is None or selection_score is None:
             return corr
+
+        if selection_score.shape[-2:] != corr.shape[-2:]:
+            selection_score = F.interpolate(
+                selection_score,
+                size=corr.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        if class_gate is not None:
+            selection_score = selection_score * class_gate[:, :, None, None]
 
         return corr + self.last_corr_beta * selection_score.unsqueeze(1)
 
@@ -648,16 +737,21 @@ class RSKT_Decoder(nn.Module):
                 print("decoder last_score:", None if last_score is None else last_score.shape)
 
             print("use_last_spatial_guidance:", self.use_last_spatial_guidance)
+            print("use_class_prior_gate:", self.use_class_prior_gate)
             print("last_corr_beta:", float(self.last_corr_beta))
             print("last_score_weight:", float(self.last_score_weight))
+            print("last_token_temperature:", float(self.last_token_temperature))
+            print("last_gate_temperature:", float(self.last_gate_temperature))
             print("detach_last_selection:", self.detach_last_selection)
+            print("detach_last_gate:", self.detach_last_gate)
 
         # Build LAST spatial guidance map.
         # This keeps spatial information [B, T, H, W],
         # instead of compressing it into class prior [B, T].
         last_selection_score = None
+        last_class_gate = None
         if self.use_last_spatial_guidance:
-            last_selection_score = self.build_last_selection_score_from_clip(
+            last_selection_score, last_class_gate = self.build_last_guidance_from_clip(
                 img_feats=img_feats,
                 text_feats=text_feats,
                 last_score=last_score,
@@ -671,7 +765,11 @@ class RSKT_Decoder(nn.Module):
                     corr = self.correlation(img_feats, text_feats)
 
                 # Inject LAST spatial guidance into CLIP cost map.
-                corr = self.apply_last_spatial_guidance(corr, last_selection_score)
+                corr = self.apply_last_spatial_guidance(
+                    corr,
+                    last_selection_score,
+                    last_class_gate,
+                )
 
                 dino_corr = self.correlation(dino_feat, text_feats)
 
@@ -690,7 +788,11 @@ class RSKT_Decoder(nn.Module):
                     corr = self.correlation(img_feats, text_feats)
 
                 # Inject LAST spatial guidance into CLIP cost map.
-                corr = self.apply_last_spatial_guidance(corr, last_selection_score)
+                corr = self.apply_last_spatial_guidance(
+                    corr,
+                    last_selection_score,
+                    last_class_gate,
+                )
 
                 dino_corr = self.correlation(dino_feat, text_feats)
                 fused_corr_embed = self.simple_concatenation_corr(corr, dino_corr)
@@ -702,7 +804,11 @@ class RSKT_Decoder(nn.Module):
                     corr = self.correlation(img_feats, text_feats)
 
                 # Inject LAST spatial guidance into CLIP cost map.
-                corr = self.apply_last_spatial_guidance(corr, last_selection_score)
+                corr = self.apply_last_spatial_guidance(
+                    corr,
+                    last_selection_score,
+                    last_class_gate,
+                )
 
                 dino_corr = self.correlation(dino_feat, text_feats)
                 fused_corr_embed = self.simple_mean_corr(corr, dino_corr)
@@ -722,7 +828,11 @@ class RSKT_Decoder(nn.Module):
                 corr = self.correlation(img_feats, text_feats)
 
             # Inject LAST spatial guidance into CLIP cost map.
-            corr = self.apply_last_spatial_guidance(corr, last_selection_score)
+            corr = self.apply_last_spatial_guidance(
+                corr,
+                last_selection_score,
+                last_class_gate,
+            )
 
             fused_corr_embed = self.corr_embed(corr)
             print("Only CLIP feature is used.")
@@ -771,6 +881,6 @@ class RSKT_Decoder(nn.Module):
             DINO_projected_decoder_guidance,
         )
 
-        # Do not apply class-level global prior in this experiment.
-        # LAST information has already been injected into CLIP cost map spatially.
+        # Do not apply class-level global prior to final logits.
+        # The class prior only gates the LAST spatial guidance before RS-Fusion.
         return logit
