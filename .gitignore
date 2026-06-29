@@ -1,13 +1,4 @@
-datasets/DLRSD
-datasets/DLRSD_split
-datasets/iSAID
-datasets/iSAID_split
-datasets/LoveDA
-datasets/Potsdam
-datasets/uavid
-datasets/UDD5
-datasets/Vaihingen
-datasets/VDD
+datasets/
 pretrained/RSKT-Seg-ckpt/
 output/
 detectron2/
